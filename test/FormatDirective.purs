@@ -120,7 +120,7 @@ parseDirectivesFromModule (Module { header: ModuleHeader header, body }) =
         , compactRecords: opts.compactRecords
         , letClauseSameLine: opts.letClauseSameLine
         , singleLineLetIn: opts.singleLineLetIn
-        , alignEquals: opts.alignEquals
+        , alignClauses: opts.alignClauses
         }
     }
     where

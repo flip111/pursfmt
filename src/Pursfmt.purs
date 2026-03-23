@@ -5,6 +5,7 @@ module Pursfmt
   , ThenPlacementOption(..)
   , ImportSortOption(..)
   , ImportWrapOption(..)
+  , AlignClausesOption(..)
   , Format
   , formatModule
   , formatDecl
@@ -27,7 +28,7 @@ import Data.Foldable (foldMap, foldl, foldr, all)
 import Data.List.NonEmpty as NonEmptyList
 import Data.Traversable (traverse)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Monoid (power)
 import Data.String.Pattern (Pattern(..)) as String
 import Data.Monoid as Monoid
@@ -73,6 +74,13 @@ data ImportSortOption
 
 derive instance eqImportSortOpion :: Eq ImportSortOption
 
+data AlignClausesOption
+  = AlignClausesNone
+  | AlignClausesEquals
+  | AlignClausesFull
+
+derive instance eqAlignClausesOption :: Eq AlignClausesOption
+
 type FormatOptions e a =
   { formatError :: e -> FormatDoc a
   , unicode :: UnicodeOption
@@ -85,7 +93,7 @@ type FormatOptions e a =
   , compactRecords :: Boolean
   , letClauseSameLine :: Boolean
   , singleLineLetIn :: Boolean
-  , alignEquals :: Boolean
+  , alignClauses :: AlignClausesOption
   }
 
 defaultFormatOptions :: forall e a. FormatError e => FormatOptions e a
@@ -101,7 +109,7 @@ defaultFormatOptions =
   , compactRecords: false
   , letClauseSameLine: false
   , singleLineLetIn: false
-  , alignEquals: false
+  , alignClauses: AlignClausesNone
   }
 
 class FormatError e where
@@ -1540,31 +1548,80 @@ formatLetGroups conf = formatDeclGroups letDeclGroupSeparator letGroup formatLet
     LetBindingPattern _ _ _ -> DeclGroupUnknown
     LetBindingError _ -> DeclGroupUnknown
 
--- | Measure the single-line width of a value binding's LHS (name + binders).
--- | Only measures the last line to exclude leading comments.
-valueLhsWidth :: forall e a. FormatOptions e a -> ValueBindingFields e -> Int
-valueLhsWidth conf { name, binders } =
+-- | Render a FormatDoc to a single-line string for width measurement.
+-- | Takes only the last line to exclude leading comments.
+measureLastLineWidth :: forall a. FormatDoc a -> Int
+measureLastLineWidth doc =
   let
-    lhsDoc = Doc.toDoc $ case Array.length binders of
-      0 -> formatName conf name
-      _ -> formatName conf name `space` joinWithMap space (flexGroup <<< formatBinder conf) binders
-    rendered = Dodo.print Dodo.plainText { pageWidth: 99999, ribbonRatio: 1.0, indentWidth: 2, indentUnit: "  " } lhsDoc
+    rendered = Dodo.print Dodo.plainText { pageWidth: top, ribbonRatio: 1.0, indentWidth: 2, indentUnit: "  " } (Doc.toDoc doc)
   in
     case SCU.lastIndexOf (String.Pattern "\n") rendered of
       Just i -> SCU.length rendered - i - 1
       Nothing -> SCU.length rendered
 
+-- | Measure the single-line width of a single formatted binder.
+binderWidth :: forall e a. FormatOptions e a -> Binder e -> Int
+binderWidth conf = measureLastLineWidth <<< flexGroup <<< formatBinder conf
+
+-- | Measure the single-line width of a value binding's LHS (name + binders).
+valueLhsWidth :: forall e a. FormatOptions e a -> ValueBindingFields e -> Int
+valueLhsWidth conf { name, binders } =
+  measureLastLineWidth $ case Array.length binders of
+    0 -> formatName conf name
+    _ -> formatName conf name `space` joinWithMap space (flexGroup <<< formatBinder conf) binders
+
+-- | Compute the max width for each binder column across multiple clauses.
+binderColumnWidths :: forall e a. FormatOptions e a -> Array (ValueBindingFields e) -> Array Int
+binderColumnWidths conf bindings =
+  let
+    allWidths = map (\{ binders } -> map (binderWidth conf) binders) bindings
+    maxCols = foldl (\acc ws -> max acc (Array.length ws)) 0 allWidths
+  in
+    Array.mapWithIndex (\i _ -> foldl (\acc ws -> max acc (fromMaybe 0 (Array.index ws i))) 0 allWidths) (Array.replicate maxCols 0)
+
+-- | Compute the LHS width when binders are column-aligned.
+-- | Non-last binders use column max widths; last binder uses its actual width
+-- | since it isn't padded (equals-alignment handles the gap).
+columnAlignedLhsWidth :: forall e a. FormatOptions e a -> Array Int -> ValueBindingFields e -> Int
+columnAlignedLhsWidth conf colWidths { name, binders } =
+  measureLastLineWidth (formatName conf name) + 1 + foldl (+) 0 paddedWidths
+  where
+  numBinders = Array.length binders
+  paddedWidths = Array.mapWithIndex
+    ( \i binder ->
+        if i == numBinders - 1 then binderWidth conf binder
+        else fromMaybe 0 (Array.index colWidths i) + 1
+    )
+    binders
+
+-- | Compute alignment parameters for a set of value bindings.
+computeAlignment :: forall e a. FormatOptions e a -> AlignClausesOption -> Array (ValueBindingFields e) -> { mbColumnWidths :: Maybe (Array Int), maxWidth :: Int }
+computeAlignment conf alignMode bindings =
+  let
+    mbColumnWidths = if alignMode == AlignClausesFull then Just (binderColumnWidths conf bindings) else Nothing
+    maxWidth = case mbColumnWidths of
+      Just colWidths -> foldl (\acc vb -> max acc (columnAlignedLhsWidth conf colWidths vb)) 0 bindings
+      Nothing -> foldl (\acc vb -> max acc (valueLhsWidth conf vb)) 0 bindings
+  in
+    { mbColumnWidths, maxWidth }
+
 -- | Format a value binding with padding before the `=` to align with other clauses.
-formatValueBindingAligned :: forall e a. Int -> Format (ValueBindingFields e) e a
-formatValueBindingAligned maxWidth conf binding@{ name, binders, guarded } =
+-- | When columnWidths is provided, also aligns each binder column.
+formatValueBindingAligned :: forall e a. Maybe (Array Int) -> Int -> Format (ValueBindingFields e) e a
+formatValueBindingAligned mbColumnWidths maxWidth conf binding@{ name, binders, guarded } =
   case guarded of
     Unconditional tok (Where { expr, bindings }) ->
       let
-        currentWidth = valueLhsWidth conf binding
+        currentWidth = case mbColumnWidths of
+          Just colWidths -> columnAlignedLhsWidth conf colWidths binding
+          Nothing -> valueLhsWidth conf binding
         padding = max 0 (maxWidth - currentWidth)
-        lhs = formatName conf name
-          `flexSpaceBreak`
-            indent (joinWithMap spaceBreak (anchor <<< formatBinder conf) binders)
+        lhs = case mbColumnWidths of
+          Just colWidths -> formatName conf name `space` formatBindersColumnAligned conf colWidths binders
+          Nothing ->
+            formatName conf name
+              `flexSpaceBreak`
+                indent (joinWithMap spaceBreak (anchor <<< formatBinder conf) binders)
         rhs = Hang.toFormatDoc (indent (anchor (formatToken conf tok)) `hang` formatHangingExpr conf expr)
       in
         Doc.fromDoc
@@ -1576,18 +1633,34 @@ formatValueBindingAligned maxWidth conf binding@{ name, binders, guarded } =
             indent (foldMap (formatWhere conf) bindings)
     Guarded _ -> formatValueBinding conf binding
 
--- | Try to align `=` across top-level declaration clauses of the same function.
+-- | Format binders with column alignment: each positional binder is padded to its column width.
+formatBindersColumnAligned :: forall e a. FormatOptions e a -> Array Int -> Array (Binder e) -> FormatDoc a
+formatBindersColumnAligned conf colWidths binders =
+  joinWithMap space identity $ Array.mapWithIndex padBinder binders
+  where
+  numBinders = Array.length binders
+  padBinder i binder =
+    let
+      formatted = flexGroup (formatBinder conf binder)
+      targetWidth = fromMaybe 0 (Array.index colWidths i)
+      currentWidth = binderWidth conf binder
+      padding = max 0 (targetWidth - currentWidth)
+    in
+      if i == numBinders - 1 then formatted
+      else Doc.fromDoc (Doc.toDoc formatted <> Dodo.text (power " " padding))
+
+-- | Try to align clauses of the same top-level function.
 alignTopLevelDecls :: forall e a. FormatOptions e a -> NonEmptyList.NonEmptyList (Declaration e) -> Maybe (FormatDoc a)
 alignTopLevelDecls conf decls = do
-  guard conf.alignEquals
+  guard (conf.alignClauses /= AlignClausesNone)
   let declArray = Array.fromFoldable decls
   let bindings = Array.mapMaybe extractDeclValue declArray
   guard (Array.length bindings >= 2)
   guard (all isUnconditional bindings)
-  let maxWidth = foldl (\acc vb -> max acc (valueLhsWidth conf vb)) 0 bindings
+  let { mbColumnWidths, maxWidth } = computeAlignment conf conf.alignClauses bindings
   pure $ joinWithMap break
     ( \d -> case d of
-        DeclValue vb | isUnconditional vb -> formatValueBindingAligned maxWidth conf vb
+        DeclValue vb | isUnconditional vb -> formatValueBindingAligned mbColumnWidths maxWidth conf vb
         _ -> formatDecl conf d
     )
     declArray
@@ -1596,17 +1669,17 @@ alignTopLevelDecls conf decls = do
     DeclValue vb -> Just vb
     _ -> Nothing
 
--- | Try to align `=` across let binding clauses of the same function.
+-- | Try to align clauses of the same let-bound function.
 alignLetBindings :: forall e a. FormatOptions e a -> NonEmptyList.NonEmptyList (LetBinding e) -> Maybe (FormatDoc a)
 alignLetBindings conf decls = do
-  guard conf.alignEquals
+  guard (conf.alignClauses /= AlignClausesNone)
   let declArray = Array.fromFoldable decls
   bindings <- traverse extractLetBinding declArray
   guard (Array.length bindings >= 2)
   guard (allSameName bindings)
   guard (all isUnconditional bindings)
-  let maxWidth = foldl (\acc vb -> max acc (valueLhsWidth conf vb)) 0 bindings
-  pure $ joinWithMap break (formatValueBindingAligned maxWidth conf) bindings
+  let { mbColumnWidths, maxWidth } = computeAlignment conf conf.alignClauses bindings
+  pure $ joinWithMap break (formatValueBindingAligned mbColumnWidths maxWidth conf) bindings
   where
   extractLetBinding = case _ of
     LetBindingName vb -> Just vb

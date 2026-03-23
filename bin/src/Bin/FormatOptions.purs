@@ -15,7 +15,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Newtype (class Newtype)
 import Data.Traversable (traverse)
 import Data.YAML.Foreign.Encode (class ToYAML, entry, object)
-import Pursfmt (ImportSortOption(..), ImportWrapOption(..), ThenPlacementOption(..), TypeArrowOption(..), UnicodeOption(..))
+import Pursfmt (AlignClausesOption(..), ImportSortOption(..), ImportWrapOption(..), ThenPlacementOption(..), TypeArrowOption(..), UnicodeOption(..))
 
 type FormatOptions =
   { importSort :: ImportSortOption
@@ -31,7 +31,7 @@ type FormatOptions =
   , compactRecords :: Boolean
   , letClauseSameLine :: Boolean
   , singleLineLetIn :: Boolean
-  , alignEquals :: Boolean
+  , alignClauses :: AlignClausesOption
   }
 
 -- Newtype wrapper for ToYAML instance
@@ -54,7 +54,7 @@ defaults =
   , compactRecords: false
   , letClauseSameLine: false
   , singleLineLetIn: false
-  , alignEquals: false
+  , alignClauses: AlignClausesNone
   }
 
 formatOptions :: ArgParser FormatOptions
@@ -140,10 +140,19 @@ formatOptions =
         Arg.flag [ "--single-line-let-in", "-slli" ]
           "Keep single-binding let expressions on one line when they fit."
           # Arg.boolean
-    , alignEquals:
-        Arg.flag [ "--align-equals", "-ae" ]
-          "Align equals signs across clauses of the same function definition."
-          # Arg.boolean
+    , alignClauses:
+        Arg.choose "align clauses"
+          [ Arg.flag [ "--align-clauses-none", "-acn" ]
+              "No alignment of clauses.\nDefault."
+              $> AlignClausesNone
+          , Arg.flag [ "--align-clauses-equals", "-ace" ]
+              "Align equals signs across clauses of the same function definition."
+              $> AlignClausesEquals
+          , Arg.flag [ "--align-clauses-full", "-acf" ]
+              "Align binder columns and equals signs across clauses of the same function definition."
+              $> AlignClausesFull
+          ]
+          # Arg.default defaults.alignClauses
     }
 
 unicodeOption :: ArgParser UnicodeOption
@@ -177,7 +186,7 @@ fromJson json = do
   compactRecords <- obj .:? "compactRecords"
   letClauseSameLine <- obj .:? "letClauseSameLine"
   singleLineLetIn <- obj .:? "singleLineLetIn"
-  alignEquals <- obj .:? "alignEquals"
+  alignClauses <- traverse alignClausesFromString =<< obj .:? "alignClauses"
   pure
     { importSort: fromMaybe defaults.importSort importSort
     , importWrap: fromMaybe defaults.importWrap importWrap
@@ -192,7 +201,7 @@ fromJson json = do
     , compactRecords: fromMaybe defaults.compactRecords compactRecords
     , letClauseSameLine: fromMaybe defaults.letClauseSameLine letClauseSameLine
     , singleLineLetIn: fromMaybe defaults.singleLineLetIn singleLineLetIn
-    , alignEquals: fromMaybe defaults.alignEquals alignEquals
+    , alignClauses: fromMaybe defaults.alignClauses alignClauses
     }
 
 toJson :: FormatOptions -> Json
@@ -211,7 +220,7 @@ toJson options =
     # extend (assoc "compactRecords" options.compactRecords)
     # extend (assoc "letClauseSameLine" options.letClauseSameLine)
     # extend (assoc "singleLineLetIn" options.singleLineLetIn)
-    # extend (assoc "alignEquals" options.alignEquals)
+    # extend (assoc "alignClauses" (alignClausesToString options.alignClauses))
 
 thenPlacementFromString :: String -> Either JsonDecodeError ThenPlacementOption
 thenPlacementFromString = case _ of
@@ -272,6 +281,19 @@ importSortToString :: ImportSortOption -> String
 importSortToString = case _ of
   ImportSortSource -> "source"
   ImportSortIde -> "ide"
+
+alignClausesFromString :: String -> Either JsonDecodeError AlignClausesOption
+alignClausesFromString = case _ of
+  "none" -> pure AlignClausesNone
+  "equals" -> pure AlignClausesEquals
+  "full" -> pure AlignClausesFull
+  other -> throwError $ UnexpectedValue (Json.fromString other)
+
+alignClausesToString :: AlignClausesOption -> String
+alignClausesToString = case _ of
+  AlignClausesNone -> "none"
+  AlignClausesEquals -> "equals"
+  AlignClausesFull -> "full"
 
 instance toYAMLFormatOptions :: ToYAML FormatOptionsYAML where
   toYAML (FormatOptionsYAML options) =
