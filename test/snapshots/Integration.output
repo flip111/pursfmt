@@ -11,12 +11,17 @@ classify config x = { value: x, category: result }
   where
   result = if x > config.threshold then "above" else "below"
 
--- Align equals across pattern match clauses
+-- Multi-clause with varying pattern widths (exercises both column and equals alignment)
 eval :: String -> Int -> Int
 eval "add" x = x + 1
 eval "double" x = x * 2
 eval "negate" x = negate x
 eval _ x = x
+
+-- Multi-clause with constructors of different widths
+fromMaybe' :: forall a. a -> Maybe a -> a
+fromMaybe' default Nothing = default
+fromMaybe' _ (Just x) = x
 
 -- Let with single binding (should stay on one line) and multi-binding
 transform :: Array Int -> Array Int
@@ -30,6 +35,17 @@ transform xs =
     in
       Tuple doubled total
 
+-- Multi-clause pattern match inside a let binding
+sortHelper :: forall a b. (a -> Maybe b) -> (b -> b -> Int) -> Array a -> Array a
+sortHelper f comp xs =
+  let
+    g Nothing Nothing = 0
+    g (Just _) Nothing = 1
+    g Nothing (Just _) = negate 1
+    g (Just a) (Just b) = comp a b
+  in
+    xs
+
 -- Nested if-then-else (then placement matters with width constraint)
 describe :: Int -> String
 describe n = if n > 100 then "large" else if n > 10 then "medium" else "small"
@@ -41,7 +57,7 @@ compute a b = { sum: s, product: p }
   s = a + b
   p = a * b
 
--- Multi-clause in let binding with where
+-- Multi-clause in where block
 process :: forall a. (a -> Maybe a) -> Array a -> Tuple (Array a) Int
 process f xs = Tuple result count
   where
@@ -61,7 +77,7 @@ class Showable a <= Displayable a where
 updateRecord :: { name :: String, age :: Int } -> { name :: String, age :: Int }
 updateRecord rec = rec { age = rec.age + 1 }
 
--- @format --align-equals --let-clause-same-line --single-line-let-in --where-clause-same-line --compact-records --arrow-last --import-sort-ide --unicode-always --then-new-line-for-long-line --width 80
+-- @format --align-clauses-full --let-clause-same-line --single-line-let-in --where-clause-same-line --compact-records --arrow-last --import-sort-ide --unicode-always --then-new-line-for-long-line --width 80
 module Integration where
 
 import Prelude
@@ -81,12 +97,17 @@ classify config x = {value: x, category: result}
   where
   result = if x > config.threshold then "above" else "below"
 
--- Align equals across pattern match clauses
+-- Multi-clause with varying pattern widths (exercises both column and equals alignment)
 eval ∷ String → Int → Int
-eval "add" x    = x + 1
+eval "add"    x = x + 1
 eval "double" x = x * 2
 eval "negate" x = negate x
-eval _ x        = x
+eval _        x = x
+
+-- Multi-clause with constructors of different widths
+fromMaybe' ∷ ∀ a. a → Maybe a → a
+fromMaybe' default Nothing  = default
+fromMaybe' _       (Just x) = x
 
 -- Let with single binding (should stay on one line) and multi-binding
 transform ∷ Array Int → Array Int
@@ -95,6 +116,15 @@ transform xs =
   in  let doubled = map (\x → x * 2) evens
           total = length doubled
   in  Tuple doubled total
+
+-- Multi-clause pattern match inside a let binding
+sortHelper ∷ ∀ a b. (a → Maybe b) → (b → b → Int) → Array a → Array a
+sortHelper f comp xs =
+  let g Nothing  Nothing  = 0
+      g (Just _) Nothing  = 1
+      g Nothing  (Just _) = negate 1
+      g (Just a) (Just b) = comp a b
+  in  xs
 
 -- Nested if-then-else (then placement matters with width constraint)
 describe ∷ Int → String
@@ -107,7 +137,7 @@ compute a b = {sum: s, product: p}
   s = a + b
   p = a * b
 
--- Multi-clause in let binding with where
+-- Multi-clause in where block
 process ∷ ∀ a. (a → Maybe a) → Array a → Tuple (Array a) Int
 process f xs = Tuple result count
   where

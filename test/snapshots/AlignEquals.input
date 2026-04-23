@@ -1,5 +1,6 @@
--- @format --align-equals
--- @format --align-equals --let-clause-same-line
+-- @format --align-clauses-equals
+-- @format --align-clauses-full
+-- @format --align-clauses-full --let-clause-same-line
 module AlignEquals where
 
 -- Multiple clauses with different pattern widths

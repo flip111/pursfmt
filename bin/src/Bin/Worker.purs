@@ -45,7 +45,7 @@ type WorkerConfig =
   , compactRecords :: Boolean
   , letClauseSameLine :: Boolean
   , singleLineLetIn :: Boolean
-  , alignEquals :: Boolean
+  , alignClauses :: String
   }
 
 toWorkerConfig :: FormatOptions -> WorkerConfig
@@ -63,7 +63,7 @@ toWorkerConfig options =
   , compactRecords: options.compactRecords
   , letClauseSameLine: options.letClauseSameLine
   , singleLineLetIn: options.singleLineLetIn
-  , alignEquals: options.alignEquals
+  , alignClauses: FormatOptions.alignClausesToString options.alignClauses
   }
 
 type WorkerData =
@@ -107,7 +107,7 @@ formatCommand args operators contents = do
           , compactRecords = args.compactRecords
           , letClauseSameLine = args.letClauseSameLine
           , singleLineLetIn = args.singleLineLetIn
-          , alignEquals = args.alignEquals
+          , alignClauses = args.alignClauses
           }
       Right $ print $ toDoc $ formatModule opts ok
     ParseSucceededWithErrors _ errs -> do
@@ -147,7 +147,9 @@ formatInPlaceCommand shouldCheck operators { filePath, config } = do
       , compactRecords: config.compactRecords
       , letClauseSameLine: config.letClauseSameLine
       , singleLineLetIn: config.singleLineLetIn
-      , alignEquals: config.alignEquals
+      , alignClauses:
+          fromRight' (\_ -> unsafeCrashWith "Unknown alignClauses value") do
+            FormatOptions.alignClausesFromString config.alignClauses
       }
   contents <- FS.readTextFile UTF8 filePath
   start <- liftEffect hrtime
